@@ -1,0 +1,9 @@
+---
+title: "Report example"
+jupyter: python3
+---
+# Пример отчета по исследованию
+
+```{python}
+print("Hello, world!")
+```
