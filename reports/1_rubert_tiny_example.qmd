@@ -1,0 +1,363 @@
+---
+title: Использование rubert-tiny в задаче классификации
+format:
+  html:
+    page-layout: full # Тип расположения контента на странице
+    code-fold: true # Сворачивание кода в отдельные блоки
+    code-summary: Show the code # Действие со свернутыми блоками кода
+    self-contained: true
+    anchor-sections: true
+    smooth-scroll: true
+    toc: true # Добавить содержание
+    toc-depth: 4 # Максимальная глубина вложений в содержании
+    toc-title: Содержание # Заголовок содержания
+    toc-location: left # Местоположение содержания
+execute:
+  enabled: true
+  keep-ipynb: true
+jupyter: python3
+---
+
+
+```{python}
+import polars as pl
+from datasets import load_dataset, Dataset
+import re
+import numpy as np
+from sklearn.model_selection import train_test_split
+from transformers import (
+    AutoTokenizer,
+    AutoModelForSequenceClassification,
+    TrainingArguments,
+    Trainer,
+    EvalPrediction,
+    EarlyStoppingCallback,
+)
+from sklearn.metrics import (
+    f1_score,
+    roc_auc_score,
+    accuracy_score,
+    multilabel_confusion_matrix,
+    confusion_matrix,
+    ConfusionMatrixDisplay,
+    classification_report,
+    precision_score,
+    recall_score,
+)
+import matplotlib.pyplot as plt
+from functools import partial
+import pandas as pd
+import torch
+from sklearn.utils.class_weight import compute_class_weight
+from typing import Any
+import plotly.figure_factory as ff
+
+```
+
+
+Подгрузим данные и проведем минимальный препроцессинг: отфильтруем пустые комментарии, а также несколько небольших категорий.
+
+```{python}
+frame = pl.read_csv("../data/practice_cleaned.csv")
+frame.head()
+
+
+```
+
+
+```{python}
+def preprocess_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    """Filter out empty comments and comments from small categs.
+
+    Args:
+        frame (pl.DataFrame): input raw frame.
+
+    Returns:
+        pl.DataFrame: clear processed frame.
+    """
+    original_shape = frame.shape
+    frame = frame.filter(
+        ~pl.col("Категория").is_in(
+            ["Качество материалов", "Интерфейс платформы", "Общение с куратором"]
+        )
+    )
+    frame = frame.filter(~(pl.col("Комментарий").is_null()))
+    print(f"Empty comments & Category filtering: {original_shape} -> {frame.shape}")
+    return frame
+
+
+```
+
+## Подготовка пайплайна обучения
+
+Для обучения BERT-like модели с использованием фреймворков от `huggingface` необходимо проделать следующие шаги:
+
+- Перейти от исходных сырых данных в формате `.csv` к набору тензоров, содержащем в себе токенизированные тексты и метки классов (категорий). Это выполняют функции `preprocess_sample()` и `make_dataset()`.
+- Определить модель, токенизатор и основные параметры обучения. Эти действия происходят в `make_training_pipeline()`.
+- Определить функции для вычисления метрик на валидационных итерациях обучения (`compute_metrics()`).
+
+```{python}
+def preprocess_sample(
+    sample: dict[str, Any], tokenizer: AutoTokenizer
+) -> dict[str, Any]:
+    """Encode input raw string to sequence of tokens.
+    Also add corresponding labels.
+
+    Args:
+        sample (dict[str, Any]): dataset sample w/ <text-label> pair
+        tokenizer (AutoTokenizer): model tokenizer
+
+    Returns:
+        dict[str, Any]: transformed sample with tokenized text and labels.
+    """
+    text = sample["text"]
+    # каждый сэмпл паддится до самой длинной посл-ти в этом батче (padding="max_length")
+    # макс. длина посл-ти 512 (max_length=512), все, что длиннее, обрезается (truncation=True)
+    encoding = tokenizer(text, padding="max_length", truncation=True, max_length=512)
+    encoding["labels"] = sample["labels"]
+    return encoding
+
+
+```
+
+```{python}
+def compute_metrics(p: EvalPrediction) -> dict[str, float]:
+    """Calculate metrics used on validation step.
+
+    Args:
+        p (EvalPrediction): container with predictions and
+        ground-truth labels
+
+    Returns:
+        dict[str, float]: dictionary with computed labels
+    """
+    preds = p.predictions[0] if isinstance(p.predictions, tuple) else p.predictions
+    preds = np.argmax(preds, axis=1)
+    f1 = f1_score(p.label_ids, preds, average="macro")
+    acc = accuracy_score(p.label_ids, preds)
+    res = {"f1": f1, "accuracy": acc}
+    return res
+
+
+```
+
+```{python}
+def make_dataset(
+    frame: pl.DataFrame,
+    tokenizer: AutoTokenizer,
+    label2id: dict[str, int],
+    test_size: float = None,
+) -> tuple[Dataset, Dataset]:
+    """Create huggingface datasets used in training process.
+
+    Args:
+        frame (pl.DataFrame): input frame with text data
+        tokenizer (AutoTokenizer): model tokenizer
+        label2id (dict[str, int]): mapping from category text names
+        to digital ids.
+        test_size (float, optional): test split share. Defaults to None.
+
+    Returns:
+        tuple[Dataset, Dataset]: train & test splits, tokenized, vectorized and batched.
+    """
+    # переименуем столбцы для целостности с api hf-datasets
+    clear_frame = frame.select(
+        pl.col("Комментарий").alias("text"), pl.col("Категория").alias("labels")
+    )
+
+    # перейдем от строковых названий к численным меткам
+    clear_frame = clear_frame.with_columns(pl.col("labels").map_dict(label2id))
+
+    # каррированная функция с фиксированным токенизатором для дальнейшего исп-я в Dataset.map()
+    part_prepr = partial(preprocess_sample, tokenizer=tokenizer)
+
+    train_df, test_df = train_test_split(
+        clear_frame,
+        test_size=test_size,
+        random_state=42,
+        stratify=clear_frame["labels"],
+    )
+    train_dataset = Dataset.from_pandas(train_df.to_pandas(), split="train")
+    test_dataset = Dataset.from_pandas(test_df.to_pandas(), split="test")
+    encoded_train = train_dataset.map(
+        part_prepr, batched=True, remove_columns=train_dataset.column_names
+    )
+    encoded_test = test_dataset.map(
+        part_prepr, batched=True, remove_columns=test_dataset.column_names
+    )
+    encoded_train.set_format("torch")
+    encoded_test.set_format("torch")
+    return encoded_train, encoded_test
+
+
+```
+
+
+
+```{python}
+def make_training_pipeline(
+    exp_name: str,
+    tokenizer: AutoTokenizer,
+    train_dataset: Dataset,
+    eval_dataset: Dataset,
+    batch_size: int = 32,
+    lr: float = 2e-5,
+    epochs_num: int = 20,
+) -> Trainer:
+    """Training process wrapper.
+
+    Args:
+        exp_name (str): name of the local folder
+        for saving model checkpoints.
+        tokenizer (AutoTokenizer): model tokenizer
+        train_dataset (Dataset): train dataset split
+        eval_dataset (Dataset): test dataset split
+        batch_size (int, optional): number of samples
+        in sigle batch. Defaults to 32.
+        lr (float, optional): model's learning rate. Defaults to 2e-5.
+        epochs_num (int, optional):
+        number of training iterations. Defaults to 20.
+
+    Returns:
+        Trainer: hf training pipeline abstraction class.
+    """
+    args = TrainingArguments(
+        exp_name,
+        evaluation_strategy="epoch",
+        save_strategy="epoch",
+        learning_rate=lr,
+        per_device_train_batch_size=batch_size,
+        per_device_eval_batch_size=batch_size,
+        num_train_epochs=epochs_num,
+        weight_decay=0.01,
+        load_best_model_at_end=True,
+        metric_for_best_model="f1",
+        fp16=True,
+    )
+
+    model = AutoModelForSequenceClassification.from_pretrained(
+        "cointegrated/rubert-tiny2",
+        problem_type="single_label_classification",
+        num_labels=len(id2label),
+        id2label=id2label,
+        label2id=label2id,
+    )
+
+    trainer = Trainer(
+        model,
+        args,
+        train_dataset=train_dataset,
+        eval_dataset=eval_dataset,
+        tokenizer=tokenizer,
+        compute_metrics=compute_metrics,
+        callbacks=[EarlyStoppingCallback(early_stopping_patience=3)],
+    )
+    return trainer
+
+
+```
+
+## Обучение
+
+```{python}
+# | echo: true
+BATCH_SIZE = 180  # уменьшить в случае CUDA OOM ошибок
+EPOCHS = 3  # увеличить, 3 здесь только ради удобного дебага
+TEST_SIZE = 0.2
+```
+
+```{python}
+t = preprocess_frame(frame)
+print(t["Категория"].value_counts(sort=True))
+tokenizer = AutoTokenizer.from_pretrained("cointegrated/rubert-tiny2")
+label2id = t["Категория"].unique().sort().to_list()
+label2id = dict(zip(label2id, range(len(label2id))))
+id2label = {v: k for k, v in label2id.items()}
+```
+
+
+```{python}
+#| warning: false
+train_ds, test_ds = make_dataset(t, tokenizer, label2id, TEST_SIZE)
+```
+
+```{python}
+# | output: false
+trainer = make_training_pipeline(
+    "category_classification",
+    tokenizer,
+    train_ds,
+    test_ds,
+    BATCH_SIZE,
+    epochs_num=EPOCHS,
+)
+trainer.train()
+```
+
+
+## Валидация
+
+Воспользуемся средставми `sklearn.metrics` для получения отчета по набору классификационных метрик и `plotly` для отрисовки матрицы ошибок.
+
+```{python}
+def predict(logits: torch.Tensor) -> np.ndarray:
+    """Helper function for predictions calculating.
+
+    Args:
+        logits (torch.Tensor): model's raw output
+
+    Returns:
+        np.ndarray: array with predicted class id.
+    """
+    s = torch.nn.Softmax()
+    probs = s(torch.tensor(logits))
+    return np.argmax(probs)
+
+
+```
+
+
+```{python}
+#| warning: false
+preds = trainer.predict(test_ds)
+pred_labels = np.apply_along_axis(predict, 1, preds[0])
+pred_labels = [id2label[x] for x in pred_labels]
+gt_labels = [id2label[x] for x in preds[1]]
+cr = classification_report(gt_labels, pred_labels, output_dict=True)
+cr = pd.DataFrame(cr).T
+print(cr)
+
+cm = confusion_matrix(gt_labels, pred_labels, labels=list(label2id.keys()))
+```
+
+```{python}
+x = list(label2id.keys())
+y = list(reversed(label2id.keys()))
+fig = ff.create_annotated_heatmap(np.flipud(cm), x=x, y=y, colorscale="Viridis")
+fig.update_layout(title_text="Confusion matrix")
+fig.add_annotation(
+    dict(
+        x=0.5,
+        y=-0.15,
+        showarrow=False,
+        text="Predicted value",
+        xref="paper",
+        yref="paper",
+    )
+)
+
+fig.add_annotation(
+    dict(
+        x=-0.16,
+        y=0.5,
+        showarrow=False,
+        text="Real value",
+        textangle=-90,
+        xref="paper",
+        yref="paper",
+    )
+)
+
+fig["data"][0]["showscale"] = True
+fig.show()
+```
