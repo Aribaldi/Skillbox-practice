@@ -51,17 +51,25 @@ import torch
 from sklearn.utils.class_weight import compute_class_weight
 from typing import Any
 import plotly.figure_factory as ff
+from src.config import compose_config
+from hydra.utils import instantiate
 
+```
+
+
+```{python}
+main_conf = compose_config()
+prepr_conf = main_conf["preprocessing"]
+train_conf = main_conf["training"]
+model_conf = main_conf["model"]
 ```
 
 
 Подгрузим данные и проведем минимальный препроцессинг: отфильтруем пустые комментарии, а также несколько небольших категорий.
 
 ```{python}
-frame = pl.read_csv("../data/practice_cleaned.csv")
+frame = pl.read_csv("data/practice_cleaned.csv")
 frame.head()
-
-
 ```
 
 
@@ -77,10 +85,7 @@ def preprocess_frame(frame: pl.DataFrame) -> pl.DataFrame:
     """
     original_shape = frame.shape
     frame = frame.filter(
-        ~pl.col("Категория").is_in(
-            ["Качество материалов", "Интерфейс платформы", "Общение с куратором"]
-        )
-    )
+        ~pl.col("Категория").is_in(main_conf["small_classes"]))
     frame = frame.filter(~(pl.col("Комментарий").is_null()))
     print(f"Empty comments & Category filtering: {original_shape} -> {frame.shape}")
     return frame
@@ -113,7 +118,12 @@ def preprocess_sample(
     text = sample["text"]
     # каждый сэмпл паддится до самой длинной посл-ти в этом батче (padding="max_length")
     # макс. длина посл-ти 512 (max_length=512), все, что длиннее, обрезается (truncation=True)
-    encoding = tokenizer(text, padding="max_length", truncation=True, max_length=512)
+    encoding = tokenizer(
+        text,
+        padding=prepr_conf["padding"],
+        truncation=True,
+        max_length=prepr_conf["max_length"],
+    )
     encoding["labels"] = sample["labels"]
     return encoding
 
@@ -221,26 +231,32 @@ def make_training_pipeline(
     Returns:
         Trainer: hf training pipeline abstraction class.
     """
-    args = TrainingArguments(
-        exp_name,
-        evaluation_strategy="epoch",
-        save_strategy="epoch",
-        learning_rate=lr,
-        per_device_train_batch_size=batch_size,
-        per_device_eval_batch_size=batch_size,
-        num_train_epochs=epochs_num,
-        weight_decay=0.01,
-        load_best_model_at_end=True,
-        metric_for_best_model="f1",
-        fp16=True,
-    )
+    # args = TrainingArguments(
+    #     exp_name,
+    #     evaluation_strategy="epoch",
+    #     save_strategy="epoch",
+    #     learning_rate=lr,
+    #     per_device_train_batch_size=batch_size,
+    #     per_device_eval_batch_size=batch_size,
+    #     num_train_epochs=epochs_num,
+    #     weight_decay=0.01,
+    #     load_best_model_at_end=True,
+    #     metric_for_best_model="f1",
+    #     fp16=True,
+    # )
 
-    model = AutoModelForSequenceClassification.from_pretrained(
-        "cointegrated/rubert-tiny2",
-        problem_type="single_label_classification",
-        num_labels=len(id2label),
-        id2label=id2label,
-        label2id=label2id,
+    args = instantiate(train_conf)
+
+    # model = AutoModelForSequenceClassification.from_pretrained(
+    #     "cointegrated/rubert-tiny2",
+    #     problem_type="single_label_classification",
+    #     num_labels=len(id2label),
+    #     id2label=id2label,
+    #     label2id=label2id,
+    # )
+
+    model = instantiate(
+        model_conf, num_labels=len(id2label), id2label=id2label, label2id=label2id
     )
 
     trainer = Trainer(
@@ -261,15 +277,15 @@ def make_training_pipeline(
 
 ```{python}
 # | echo: true
-BATCH_SIZE = 180  # уменьшить в случае CUDA OOM ошибок
-EPOCHS = 3  # увеличить, 3 здесь только ради удобного дебага
-TEST_SIZE = 0.2
+#BATCH_SIZE = 180  # уменьшить в случае CUDA OOM ошибок
+#EPOCHS = 3  # увеличить, 3 здесь только ради удобного дебага
+#TEST_SIZE = 0.2
 ```
 
 ```{python}
 t = preprocess_frame(frame)
 print(t["Категория"].value_counts(sort=True))
-tokenizer = AutoTokenizer.from_pretrained("cointegrated/rubert-tiny2")
+tokenizer = AutoTokenizer.from_pretrained(prepr_conf["tokenizer_name"])
 label2id = t["Категория"].unique().sort().to_list()
 label2id = dict(zip(label2id, range(len(label2id))))
 id2label = {v: k for k, v in label2id.items()}
@@ -278,7 +294,7 @@ id2label = {v: k for k, v in label2id.items()}
 
 ```{python}
 #| warning: false
-train_ds, test_ds = make_dataset(t, tokenizer, label2id, TEST_SIZE)
+train_ds, test_ds = make_dataset(t, tokenizer, label2id, main_conf["test_size"])
 ```
 
 ```{python}
@@ -288,8 +304,8 @@ trainer = make_training_pipeline(
     tokenizer,
     train_ds,
     test_ds,
-    BATCH_SIZE,
-    epochs_num=EPOCHS,
+    train_conf["per_device_train_batch_size"],
+    epochs_num=train_conf["num_train_epochs"],
 )
 trainer.train()
 ```

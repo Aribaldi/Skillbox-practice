@@ -1,4 +1,8 @@
 defaults:
-  - data: lakefs
-  - secrets:
-      - lakefs-cred
+  - preprocessing: rubert_minimal
+  - training: rubert
+  - model: rubert
+
+
+small_classes: ["Качество материалов", "Интерфейс платформы", "Общение с куратором"]
+test_size: 0.2
