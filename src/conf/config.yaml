@@ -2,6 +2,7 @@ defaults:
   - preprocessing: rubert_minimal
   - training: rubert
   - model: rubert
+  - secrets: hf
   - _self_
 
 

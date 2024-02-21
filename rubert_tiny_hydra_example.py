@@ -203,9 +203,11 @@ def predict(logits: torch.Tensor) -> np.ndarray:
 
 @hydra.main(version_base=None, config_path="src/conf", config_name="config")
 def main(cfg: DictConfig):
-    log.info(OmegaConf.to_yaml(cfg))
+    log.info(OmegaConf.to_yaml(cfg, resolve=True))
     t = preprocess_frame(frame, cfg["small_classes"])
-    tokenizer = AutoTokenizer.from_pretrained(cfg["preprocessing"]["tokenizer_name"])
+    tokenizer = AutoTokenizer.from_pretrained(
+        cfg["preprocessing"]["tokenizer_name"], token=cfg["secrets"]["hf_token"]
+    )
     label2id = t["Категория"].unique().sort().to_list()
     label2id = dict(zip(label2id, range(len(label2id))))
     id2label = {v: k for k, v in label2id.items()}
