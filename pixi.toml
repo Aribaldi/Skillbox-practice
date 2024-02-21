@@ -10,6 +10,9 @@ readme = "README.md"
 [activation]
 scripts = ["setup.sh"]
 
+[target.win-64.activation]
+scripts = ["setup.bat]
+
 [dependencies]
 python = "==3.11.6"
 git = ">=2.42"
