@@ -5,6 +5,9 @@ defaults:
   - secrets: hf
   - _self_
 
+# hydra:
+#   run:
+#     dir: ./outputs2/${now:%Y-%m-%d}/${now:%H-%M-%S}
 
 small_classes: ["Качество материалов", "Интерфейс платформы", "Общение с куратором"]
 test_size: 0.2

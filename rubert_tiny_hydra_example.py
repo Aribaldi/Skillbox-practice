@@ -38,6 +38,7 @@ def preprocess_frame(frame: pl.DataFrame, small_classes: list[str]) -> pl.DataFr
     """
     original_shape = frame.shape
     frame = frame.filter(~pl.col("Категория").is_in(small_classes))
+    frame = frame.filter(~pl.col("Категория").is_null())
     frame = frame.filter(~(pl.col("Комментарий").is_null()))
     log.info(f"Empty comments & Category filtering: {original_shape} -> {frame.shape}")
     return frame

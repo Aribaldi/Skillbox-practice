@@ -11,7 +11,7 @@ readme = "README.md"
 scripts = ["setup.sh"]
 
 [target.win-64.activation]
-scripts = ["setup.bat]
+scripts = ["setup.bat"]
 
 [dependencies]
 python = "==3.11.6"
