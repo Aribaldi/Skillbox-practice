@@ -19,6 +19,17 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 from transformers import AutoTokenizer, EarlyStoppingCallback, EvalPrediction, Trainer
+from hydra.core.config_store import ConfigStore
+from src.types import (
+    RubertModel,
+    RubertPreprocessing,
+    RubertTraining,
+    MpnetModel,
+    MpnetPreprocessing,
+    MpnetTraining,
+    MainConfig,
+    SecretsConfig,
+)
 
 log = logging.getLogger(__name__)
 
@@ -202,7 +213,18 @@ def predict(logits: torch.Tensor) -> np.ndarray:
     return np.argmax(probs)
 
 
-@hydra.main(version_base=None, config_path="src/conf", config_name="config")
+cs = ConfigStore.instance()
+cs.store(group="preprocessing", name="rubert", node=RubertPreprocessing)
+cs.store(group="preprocessing", name="mpnet", node=MpnetPreprocessing)
+cs.store(group="model", name="rubert", node=RubertModel)
+cs.store(group="model", name="mpnet", node=MpnetModel)
+cs.store(group="training", name="rubert", node=RubertTraining)
+cs.store(group="training", name="mpnet", node=MpnetTraining)
+cs.store(group="secrets", name="secrets", node=SecretsConfig)
+cs.store(name="config", node=MainConfig)
+
+
+@hydra.main(version_base=None, config_name="config")
 def main(cfg: DictConfig):
     log.info(OmegaConf.to_yaml(cfg, resolve=True))
     t = preprocess_frame(frame, cfg["small_classes"])
