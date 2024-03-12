@@ -46,6 +46,8 @@ imbalanced-learn = "*"
 accelerate = "*"
 lightning = "2.1.1"
 catboost = "*"
+bertopic = ">=0.16.0,<0.17"
+sentence-transformers = ">=2.0.0,<2.6"
 
 [pypi-dependencies]
 emosent-py = "*"
