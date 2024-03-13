@@ -76,8 +76,10 @@ class SecretsConfig:
 
 
 defaults = [
+    "_self_",
     {"preprocessing": "rubert"},
     {"model": "rubert"},
+    # {"model": MISSING},
     {"training": "rubert"},
     {"secrets": "secrets"},
 ]
@@ -92,9 +94,9 @@ small_classes: list[str] = [
 @dataclass
 class MainConfig:
     defaults: list[Any] = field(default_factory=lambda: defaults)
-    preprocessing: Any = MISSING
-    model: Any = MISSING
-    training: Any = MISSING
-    secrets: Any = MISSING
+    preprocessing: PreprocessingConfig = MISSING
+    model: ModelConfig = MISSING
+    training: TrainingConfig = MISSING
+    secrets: SecretsConfig = MISSING
     test_size: float = 0.2
     small_classes: list[str] = field(default_factory=lambda: small_classes)
